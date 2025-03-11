@@ -1,111 +1,26 @@
-import os
+import torch
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
-from music21 import converter, harmony, note
+from torch.nn.functional import softmax
+from music21 import stream, note, chord, metadata, meter
+import markovify
+import json
 
-# Directory containing Charlie Parker MusicXML files
-directory = "Omnibook_xml/"
+# Load trained model & encoders
+chord_classes = np.load("chord_classes.npy", allow_pickle=True)
+note_classes = np.load("note_classes.npy", allow_pickle=True)
+duration_classes = np.load("duration_classes.npy", allow_pickle=True)
 
-# Lists to store extracted chords and melody notes
-all_chords = []
-all_notes = []
-
-# Loop through all MusicXML files
-for filename in os.listdir(directory):
-    if filename.endswith(".xml") or filename.endswith(".musicxml"):
-        print(f"Processing {filename}...")
-        file_path = os.path.join(directory, filename)
-        score = converter.parse(file_path)
-
-        # Extract chords and melody notes
-        chords = []
-        notes = []
-
-        for measure in score.parts[0].getElementsByClass("Measure"):
-            for element in measure.getElementsByClass("Harmony"):
-                if isinstance(element, harmony.ChordSymbol):
-                    chords.append((element.figure, element.offset))
-
-            for element in measure.notes:
-                if isinstance(element, note.Note):
-                    notes.append((element.pitch.midi, element.offset, element.quarterLength))
-
-        # Append extracted data to global lists
-        all_chords.extend(chords)
-        all_notes.extend(notes)
-
-# Convert to DataFrames
-chords_df = pd.DataFrame(all_chords, columns=["Chord", "Offset"])
-notes_df = pd.DataFrame(all_notes, columns=["Note (MIDI)", "Offset", "Duration"])
-
-# 🔹 Save extracted data for inspection
-chords_df.to_csv("all_chords.csv", index=False)
-notes_df.to_csv("all_melody.csv", index=False)
-
-# Step 1: Encode Chords as Input (X)
-chord_encoder = LabelEncoder()
-chords_df["ChordIndex"] = chord_encoder.fit_transform(chords_df["Chord"])
-
-# Step 2: Encode Notes and Durations as Target (Y)
-note_encoder = LabelEncoder()
-duration_encoder = LabelEncoder()
-notes_df["NoteIndex"] = note_encoder.fit_transform(notes_df["Note (MIDI)"])
-notes_df["DurationIndex"] = duration_encoder.fit_transform(notes_df["Duration"])
-
-# Step 3: Align Chords & Notes into Sequences
-time_steps = 32
-
-X = []
-Y = []
-for i in range(len(chords_df) - time_steps):
-    X.append(chords_df["ChordIndex"].iloc[i: i + time_steps].values)
-    Y.append(
-        list(
-            zip(
-                notes_df["NoteIndex"].iloc[i: i + time_steps].values,
-                notes_df["DurationIndex"].iloc[i: i + time_steps].values,
-            )
-        )
-    )
-
-X = np.array(X)
-Y = np.array(Y)
-
-# Convert to PyTorch tensors
-X_tensor = torch.tensor(X, dtype=torch.long)
-Y_tensor = torch.tensor(Y, dtype=torch.long)
-
-# Create PyTorch Dataset
-class JazzDataset(Dataset):
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.Y[idx]
-
-# Create DataLoader
-batch_size = 32
-dataset = JazzDataset(X_tensor, Y_tensor)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-# Define the LSTM Model
-class JazzMelodyLSTM(nn.Module):
+# Define the same model structure
+class JazzMelodyLSTM(torch.nn.Module):
     def __init__(self, vocab_size, note_output_size, duration_output_size, embedding_dim=32, hidden_dim=128):
         super(JazzMelodyLSTM, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
-        self.fc_note = nn.Linear(hidden_dim, note_output_size)
-        self.fc_duration = nn.Linear(hidden_dim, duration_output_size)
-        self.softmax = nn.LogSoftmax(dim=2)
+        self.embedding = torch.nn.Embedding(vocab_size, embedding_dim)
+        self.lstm = torch.nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        self.fc_note = torch.nn.Linear(hidden_dim, note_output_size)
+        self.fc_duration = torch.nn.Linear(hidden_dim, duration_output_size)
+        self.softmax = torch.nn.LogSoftmax(dim=2)
+
 
     def forward(self, x):
         x = self.embedding(x)
@@ -113,36 +28,168 @@ class JazzMelodyLSTM(nn.Module):
         note_out = self.softmax(self.fc_note(x))
         duration_out = self.softmax(self.fc_duration(x))
         return note_out, duration_out
+    
 
-# Initialize Model
-vocab_size = len(chord_encoder.classes_)
-note_output_size = len(note_encoder.classes_)
-duration_output_size = len(duration_encoder.classes_)
+def create_chord_stream(chord_sequence):
+    chord_stream = stream.Part()
+    measure_count = 1
 
-model = JazzMelodyLSTM(vocab_size, note_output_size, duration_output_size)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+    for chord_symbol in chord_sequence:
+        current_measure = stream.Measure(number=measure_count)
+        block_chord = chord.Chord(chords[chord_symbol])
+        block_chord.quarterLength = 4.0  # Whole note duration
+        current_measure.append(block_chord)
+        chord_stream.append(current_measure)
+        measure_count += 1
 
-# Train the Model
-num_epochs = 100
-for epoch in range(num_epochs):
-    total_loss = 0
-    for batch_X, batch_Y in dataloader:
-        optimizer.zero_grad()
-        note_out, duration_out = model(batch_X)
-        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, :, 0].reshape(-1))
-        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, :, 1].reshape(-1))
-        loss = loss_note + loss_duration
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+    return chord_stream
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss:.4f}")
 
-# Save Model & Encoders
-torch.save(model.state_dict(), "charlie_parker_melody_with_durations_model.pth")
-np.save("chord_classes.npy", chord_encoder.classes_)
-np.save("note_classes.npy", note_encoder.classes_)
-np.save("duration_classes.npy", duration_encoder.classes_)
+# Function to generate a melody
+def generate_melody(chord_sequence, length=48):
+    chord_indices = [np.where(chord_classes == c)[0][0] for c in chord_sequence]
+    chord_indices = torch.tensor(chord_indices, dtype=torch.long).unsqueeze(0)
 
-print("Model trained on all files and saved successfully!")
+    melody = []
+    for _ in range(length):
+        with torch.no_grad():
+            note_out, duration_out = model(chord_indices)
+        
+        note_probs = softmax(note_out[0, -1], dim=0)
+        duration_probs = softmax(duration_out[0, -1], dim=0)
+        
+        predicted_note = torch.multinomial(note_probs, 1).item()
+        predicted_duration = torch.multinomial(duration_probs, 1).item()
+
+        if np.random.rand() < 0.7:
+            duration_value = 0.5
+        elif np.random.rand() < 0.85:
+            duration_value = 1.0
+        else:
+            duration_value = 0.25
+
+        melody.append((int(note_classes[predicted_note]), duration_value))
+
+        chord_indices = torch.roll(chord_indices, shifts=-1, dims=1)
+        chord_indices[0, -1] = predicted_note
+
+    return melody
+
+
+def generate_chords(num_bars=24):
+    # Open and read the JSON files
+    with open('markovify.json', 'r') as f:
+        model_json = json.load(f)
+    
+    markov_model = markovify.Text.from_json(model_json)
+    
+    sentence = None
+    while sentence == False or sentence is None:  # Keep generating until we get a valid one
+        sentence = markov_model.make_sentence(tries=100, min_chars=num_bars*4, max_chars=num_bars*11)
+        sentence = chord_length_filter(sentence, num_bars)
+
+    
+    desired_chord_length = num_bars * 4
+    curr_chord_length = 0
+    chords = sentence.split()
+    for c in chords:
+        c = c.rstrip('.')
+        curr_chord_length += int(c.split('x')[1])
+    
+    if curr_chord_length == desired_chord_length:
+        print(desired_chord_length, curr_chord_length)
+        return sentence
+    else:
+        return None
+
+# Convert to MusicXML using music21
+def generate_score(melody, chord_sequence, output_file="generated_f_blues_with_chords.musicxml"):
+    score = 
+    melody_stream = stream.Part()
+    chord_stream = stream.Part()
+
+    melody_stream.append(metadata.Metadata())
+    melody_stream.metadata.title = "Generated 12 Bar F Blues Melody with Chords"
+    melody_stream.metadata.composer = "Charlie Parker AI"
+
+    measure_length = 4
+    measure_count = 0
+    current_melody_measure = stream.Measure(number=measure_count + 1)
+    current_chord_measure = stream.Measure(number=measure_count + 1)
+
+    time_in_measure = 0
+    chord_idx = 0
+
+    for midi_pitch, duration in melody:
+        if time_in_measure + duration > measure_length:
+            melody_stream.append(current_melody_measure)
+            chord_stream.append(current_chord_measure)
+            measure_count += 1
+            current_melody_measure = stream.Measure(number=measure_count + 1)
+            current_chord_measure = stream.Measure(number=measure_count + 1)
+            time_in_measure = 0
+
+        n = note.Note(midi_pitch)
+        n.quarterLength = duration
+        current_melody_measure.append(n)
+
+        time_in_measure += duration
+
+    melody_stream.append(current_melody_measure)
+    chord_stream = create_chord_stream()
+
+    score.append(chord_stream)
+    score.append(melody_stream)
+
+    score.write("musicxml", fp=output_file)
+    score.show()
+    
+    
+# Function to enforce Markovify word count
+def chord_length_filter(sentence, num_bars=12):
+    desired_chord_length = num_bars * 4
+    curr_chord_length = 0
+    chords = sentence.split()
+    for c in chords:
+        c = c.rstrip('.')
+        curr_chord_length += int(c.split('x')[1])
+    
+    if curr_chord_length == desired_chord_length:
+        print(desired_chord_length, curr_chord_length)
+        return sentence
+    else:
+        return None
+
+def main():
+    # Set up the score
+    score = stream.Score()
+    chords = stream.Part()
+    melody = stream.Part()
+
+    # Add time signature and key information to the score
+    time_signature = meter.TimeSignature('4/4')
+    score.append(time_signature)
+    #k = key.Key('C')
+    #score.append(k)
+    
+    # Load model
+    vocab_size = len(chord_classes)
+    note_output_size = len(note_classes)
+    duration_output_size = len(duration_classes)
+
+    model = JazzMelodyLSTM(vocab_size, note_output_size, duration_output_size)
+    model.load_state_dict(torch.load("charlie_parker_melody_with_durations_model.pth"))
+    model.eval()
+        
+    """with open('dict_markov.json', 'r') as f:
+        markov_dict = json.load(f)"""
+    
+    num_bars=24
+        
+    generated_chords = generate_chords(num_bars)
+
+    # Generate melody
+    generated_melody = generate_melody(melody, generated_chords, length=96)
+
+    # Save melody and chords to MusicXML
+    generate_score(generated_melody, generated_chords)
