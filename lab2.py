@@ -5,6 +5,7 @@ from torch.nn.functional import softmax
 from music21 import stream, note, chord, metadata, meter
 import markovify
 import json
+import sys
 
 # Load trained model & encoders
 chord_classes = np.load("chord_classes.npy", allow_pickle=True)
@@ -193,3 +194,21 @@ def main():
 
     # Save melody and chords to MusicXML
     generate_score(generated_melody, generated_chords)
+    
+    score.insert(0, melody)
+    score.insert(0, chords)
+    score.insert(0, metadata.Metadata())
+    score.metadata.title = 'New Blues'
+    score.metadata.composer = 'Emily Ertle and Dan Little'
+    
+
+    # Play midi, output sheet music, or print the contents of the stream
+    if ("-m" in sys.argv):
+        score.show('midi')
+    elif ("-s" in sys.argv):
+        score.show()
+    else:
+        score.show('midi')
+
+if __name__ == "__main__":
+    main()
