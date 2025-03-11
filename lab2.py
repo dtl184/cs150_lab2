@@ -8,75 +8,61 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
 from music21 import converter, harmony, note
 
-# 📂 Directory containing Charlie Parker MusicXML files
 directory = "Omnibook_xml/"
 
-# Lists to store extracted chords and melody notes
 all_chords = []
 all_notes = []
 
-# Loop through all MusicXML files
 for filename in os.listdir(directory):
     if filename.endswith(".xml") or filename.endswith(".musicxml"):
         print(f"Processing {filename}...")
         file_path = os.path.join(directory, filename)
         score = converter.parse(file_path)
 
-        # Extract chords and melody notes
-        chords = []
-        notes = []
-
         for measure in score.parts[0].getElementsByClass("Measure"):
             for element in measure.getElementsByClass("Harmony"):
                 if isinstance(element, harmony.ChordSymbol):
-                    chords.append((element.figure, element.offset))
+                    all_chords.append((element.figure, element.offset, element.quarterLength))
 
             for element in measure.notes:
                 if isinstance(element, note.Note):
-                    notes.append((element.pitch.midi, element.offset, element.quarterLength))
-
-        # Append extracted data to global lists
-        all_chords.extend(chords)
-        all_notes.extend(notes)
+                    all_notes.append((element.pitch.midi, element.offset, element.quarterLength))
 
 # Convert to DataFrames
-chords_df = pd.DataFrame(all_chords, columns=["Chord", "Offset"])
+chords_df = pd.DataFrame(all_chords, columns=["Chord", "Offset", "Duration"])
 notes_df = pd.DataFrame(all_notes, columns=["Note (MIDI)", "Offset", "Duration"])
 
-# 🔹 Save extracted data for inspection
+# Save extracted data for inspection
 chords_df.to_csv("all_chords.csv", index=False)
 notes_df.to_csv("all_melody.csv", index=False)
 
-# Step 1: Encode Chords as Input (X)
 chord_encoder = LabelEncoder()
 chords_df["ChordIndex"] = chord_encoder.fit_transform(chords_df["Chord"])
 
-# Step 2: Encode Notes and Durations as Target (Y)
 note_encoder = LabelEncoder()
 duration_encoder = LabelEncoder()
 notes_df["NoteIndex"] = note_encoder.fit_transform(notes_df["Note (MIDI)"])
 notes_df["DurationIndex"] = duration_encoder.fit_transform(notes_df["Duration"])
 
-# Step 3: Align Chords & Notes into Sequences
-time_steps = 32
-
+# Align chords and notes based on their offsets and durations
 X = []
 Y = []
-for i in range(len(chords_df) - time_steps):
-    X.append(chords_df["ChordIndex"].iloc[i: i + time_steps].values)
-    Y.append(
-        list(
-            zip(
-                notes_df["NoteIndex"].iloc[i: i + time_steps].values,
-                notes_df["DurationIndex"].iloc[i: i + time_steps].values,
-            )
-        )
-    )
+
+for _, chord_row in chords_df.iterrows():
+    chord_start = chord_row["Offset"]
+    chord_end = chord_start + chord_row["Duration"]
+    chord_idx = chord_row["ChordIndex"]
+
+    # Select notes that fall within the chord duration
+    relevant_notes = notes_df[(notes_df["Offset"] >= chord_start) & (notes_df["Offset"] < chord_end)]
+
+    for _, note_row in relevant_notes.iterrows():
+        X.append([chord_idx])
+        Y.append((note_row["NoteIndex"], note_row["DurationIndex"]))
 
 X = np.array(X)
 Y = np.array(Y)
 
-# Convert to PyTorch tensors
 X_tensor = torch.tensor(X, dtype=torch.long)
 Y_tensor = torch.tensor(Y, dtype=torch.long)
 
@@ -130,8 +116,8 @@ for epoch in range(num_epochs):
     for batch_X, batch_Y in dataloader:
         optimizer.zero_grad()
         note_out, duration_out = model(batch_X)
-        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, :, 0].reshape(-1))
-        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, :, 1].reshape(-1))
+        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, 0].reshape(-1))
+        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, 1].reshape(-1))
         loss = loss_note + loss_duration
         loss.backward()
         optimizer.step()
