@@ -4,6 +4,7 @@ import pandas as pd
 from torch.nn.functional import softmax
 from music21 import stream, note, chord, metadata, meter
 import markovify
+import subprocess
 import json
 import sys
 
@@ -162,6 +163,10 @@ def chord_length_filter(sentence, num_bars=12):
         return None
 
 def main():
+
+    if '-t' in sys.argv:
+        subprocess.run(['python', 'train.py'], check=True, text=True)
+
     # Set up the score
     score = stream.Score()
     chords = stream.Part()
