@@ -8,8 +8,10 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
 from music21 import converter, harmony, note
 
+# 📂 Directory containing Charlie Parker MusicXML files
 directory = "Omnibook_xml/"
 
+# Lists to store extracted chords and melody notes
 all_chords = []
 all_notes = []
 
@@ -22,47 +24,67 @@ for filename in os.listdir(directory):
         for measure in score.parts[0].getElementsByClass("Measure"):
             for element in measure.getElementsByClass("Harmony"):
                 if isinstance(element, harmony.ChordSymbol):
-                    all_chords.append((element.figure, element.offset, element.quarterLength))
+                    # Ensure duration is captured correctly
+                    duration = element.quarterLength if element.quarterLength > 0 else 1.0
+                    all_chords.append((element.figure, element.offset, duration))
 
             for element in measure.notes:
                 if isinstance(element, note.Note):
-                    all_notes.append((element.pitch.midi, element.offset, element.quarterLength))
+                    duration = element.quarterLength if element.quarterLength > 0 else 1.0
+                    all_notes.append((element.pitch.midi, element.offset, duration))
 
 # Convert to DataFrames
 chords_df = pd.DataFrame(all_chords, columns=["Chord", "Offset", "Duration"])
 notes_df = pd.DataFrame(all_notes, columns=["Note (MIDI)", "Offset", "Duration"])
 
-# Save extracted data for inspection
+# Save for inspection
 chords_df.to_csv("all_chords.csv", index=False)
 notes_df.to_csv("all_melody.csv", index=False)
 
+# 🔹 Save extracted data for inspection
+chords_df.to_csv("all_chords.csv", index=False)
+notes_df.to_csv("all_melody.csv", index=False)
+
+# Step 1: Encode Chords as Input (X)
 chord_encoder = LabelEncoder()
 chords_df["ChordIndex"] = chord_encoder.fit_transform(chords_df["Chord"])
 
+# Step 2: Encode Notes and Durations as Target (Y)
 note_encoder = LabelEncoder()
 duration_encoder = LabelEncoder()
 notes_df["NoteIndex"] = note_encoder.fit_transform(notes_df["Note (MIDI)"])
 notes_df["DurationIndex"] = duration_encoder.fit_transform(notes_df["Duration"])
 
-# Align chords and notes based on their offsets and durations
+# Step 3: Align Chords & Notes into Sequences
+time_steps = 32
+
 X = []
 Y = []
+print('Preprocessing...\n')
+val = 0
+
 
 for _, chord_row in chords_df.iterrows():
+    print(f'Iteration: {val}')
+    val += 1
     chord_start = chord_row["Offset"]
     chord_end = chord_start + chord_row["Duration"]
     chord_idx = chord_row["ChordIndex"]
 
-    # Select notes that fall within the chord duration
+    # Select notes that fall within the chord's active time
     relevant_notes = notes_df[(notes_df["Offset"] >= chord_start) & (notes_df["Offset"] < chord_end)]
 
     for _, note_row in relevant_notes.iterrows():
+        # Input: Chord index (could be expanded to include duration)
         X.append([chord_idx])
+        
+        # Output: Note index and duration index
         Y.append((note_row["NoteIndex"], note_row["DurationIndex"]))
 
 X = np.array(X)
 Y = np.array(Y)
 
+# Convert to PyTorch tensors
 X_tensor = torch.tensor(X, dtype=torch.long)
 Y_tensor = torch.tensor(Y, dtype=torch.long)
 
@@ -116,8 +138,8 @@ for epoch in range(num_epochs):
     for batch_X, batch_Y in dataloader:
         optimizer.zero_grad()
         note_out, duration_out = model(batch_X)
-        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, 0].reshape(-1))
-        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, 1].reshape(-1))
+        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, :, 0].reshape(-1))
+        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, :, 1].reshape(-1))
         loss = loss_note + loss_duration
         loss.backward()
         optimizer.step()
