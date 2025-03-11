@@ -33,7 +33,7 @@ for filename in os.listdir(directory):
 
             for element in measure.notes:
                 if isinstance(element, note.Note):
-                    notes.append((element.pitch.midi, element.offset))
+                    notes.append((element.pitch.midi, element.offset, element.quarterLength))
 
         # Append extracted data to global lists
         all_chords.extend(chords)
@@ -41,7 +41,7 @@ for filename in os.listdir(directory):
 
 # Convert to DataFrames
 chords_df = pd.DataFrame(all_chords, columns=["Chord", "Offset"])
-notes_df = pd.DataFrame(all_notes, columns=["Note (MIDI)", "Offset"])
+notes_df = pd.DataFrame(all_notes, columns=["Note (MIDI)", "Offset", "Duration"])
 
 # 🔹 Save extracted data for inspection
 chords_df.to_csv("all_chords.csv", index=False)
@@ -51,18 +51,27 @@ notes_df.to_csv("all_melody.csv", index=False)
 chord_encoder = LabelEncoder()
 chords_df["ChordIndex"] = chord_encoder.fit_transform(chords_df["Chord"])
 
-# Step 2: Encode Notes as Target (Y)
+# Step 2: Encode Notes and Durations as Target (Y)
 note_encoder = LabelEncoder()
+duration_encoder = LabelEncoder()
 notes_df["NoteIndex"] = note_encoder.fit_transform(notes_df["Note (MIDI)"])
+notes_df["DurationIndex"] = duration_encoder.fit_transform(notes_df["Duration"])
 
 # Step 3: Align Chords & Notes into Sequences
-time_steps = 32  # 32 sixteenth-note steps per input
+time_steps = 32
 
 X = []
 Y = []
 for i in range(len(chords_df) - time_steps):
-    X.append(chords_df["ChordIndex"].iloc[i : i + time_steps].values)
-    Y.append(notes_df["NoteIndex"].iloc[i : i + time_steps].values)
+    X.append(chords_df["ChordIndex"].iloc[i: i + time_steps].values)
+    Y.append(
+        list(
+            zip(
+                notes_df["NoteIndex"].iloc[i: i + time_steps].values,
+                notes_df["DurationIndex"].iloc[i: i + time_steps].values,
+            )
+        )
+    )
 
 X = np.array(X)
 Y = np.array(Y)
@@ -90,44 +99,50 @@ dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # Define the LSTM Model
 class JazzMelodyLSTM(nn.Module):
-    def __init__(self, vocab_size, output_size, embedding_dim=32, hidden_dim=128):
+    def __init__(self, vocab_size, note_output_size, duration_output_size, embedding_dim=32, hidden_dim=128):
         super(JazzMelodyLSTM, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_size)
-        self.softmax = nn.LogSoftmax(dim=2)  # Apply log softmax for classification
+        self.fc_note = nn.Linear(hidden_dim, note_output_size)
+        self.fc_duration = nn.Linear(hidden_dim, duration_output_size)
+        self.softmax = nn.LogSoftmax(dim=2)
 
     def forward(self, x):
         x = self.embedding(x)
         x, _ = self.lstm(x)
-        x = self.fc(x)
-        return self.softmax(x)
+        note_out = self.softmax(self.fc_note(x))
+        duration_out = self.softmax(self.fc_duration(x))
+        return note_out, duration_out
 
 # Initialize Model
-vocab_size = len(chord_encoder.classes_)  # Number of unique chords
-output_size = len(note_encoder.classes_)  # Number of unique melody notes
+vocab_size = len(chord_encoder.classes_)
+note_output_size = len(note_encoder.classes_)
+duration_output_size = len(duration_encoder.classes_)
 
-model = JazzMelodyLSTM(vocab_size, output_size)
+model = JazzMelodyLSTM(vocab_size, note_output_size, duration_output_size)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Train the Model
-num_epochs = 50
+num_epochs = 100
 for epoch in range(num_epochs):
     total_loss = 0
     for batch_X, batch_Y in dataloader:
         optimizer.zero_grad()
-        output = model(batch_X)
-        loss = criterion(output.view(-1, output_size), batch_Y.view(-1))
+        note_out, duration_out = model(batch_X)
+        loss_note = criterion(note_out.view(-1, note_output_size), batch_Y[:, :, 0].reshape(-1))
+        loss_duration = criterion(duration_out.view(-1, duration_output_size), batch_Y[:, :, 1].reshape(-1))
+        loss = loss_note + loss_duration
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-    
+
     print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss:.4f}")
 
 # Save Model & Encoders
-torch.save(model.state_dict(), "charlie_parker_melody_model.pth")
+torch.save(model.state_dict(), "charlie_parker_melody_with_durations_model.pth")
 np.save("chord_classes.npy", chord_encoder.classes_)
 np.save("note_classes.npy", note_encoder.classes_)
+np.save("duration_classes.npy", duration_encoder.classes_)
 
 print("Model trained on all files and saved successfully!")
