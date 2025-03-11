@@ -8,7 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
 from music21 import converter, harmony, note
 
-# 📂 Directory containing Charlie Parker MusicXML files
+# Directory containing Charlie Parker MusicXML files
 directory = "Omnibook_xml/"
 
 # Lists to store extracted chords and melody notes
