@@ -47,7 +47,7 @@ def create_chord_stream(chord_sequence):
 
 
 # Function to generate a melody
-def generate_melody(chord_sequence, length=48):
+def generate_melody(chord_sequence, model, length=48):
     chord_indices = [np.where(chord_classes == c)[0][0] for c in chord_sequence]
     chord_indices = torch.tensor(chord_indices, dtype=torch.long).unsqueeze(0)
 
