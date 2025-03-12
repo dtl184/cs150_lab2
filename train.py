@@ -1,5 +1,5 @@
 import os
-import cupy as cp
+import numpy as cp
 import numpy as np
 import pandas as pd
 import torch

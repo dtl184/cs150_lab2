@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.nn.functional import softmax
-from music21 import stream, note, chord, metadata, meter
+from music21 import stream, note, chord, metadata, meter, harmony
 import markovify
 import subprocess
 import json
@@ -34,7 +34,9 @@ class JazzMelodyLSTM(torch.nn.Module):
 
 # Function to generate a melody
 def generate_melody(chord_sequence, model, length=48):
-    chord_indices = [np.where(chord_classes == c)[0][0] for c in chord_sequence]
+    chord_indices = []
+    for c in chord_sequence:
+        chord_indices.append(np.where(chord_classes == c[0])[0][0])
     chord_indices = torch.tensor(chord_indices, dtype=torch.long).unsqueeze(0)
 
     melody = []
@@ -78,8 +80,8 @@ def generate_chords(num_bars=24):
         for c in chords:
             c = c.rstrip('.')
             curr_chord_length += int(c.split('x')[1])
-            
-        
+            if c.split('x')[0] not in chord_classes:
+                return None
         if curr_chord_length == desired_chord_length:
             print(desired_chord_length, curr_chord_length)
             return sentence
@@ -95,45 +97,50 @@ def generate_chords(num_bars=24):
     chords = sentence.split()
     for c in chords:
         c = c.rstrip('.')
-        chord_stream.append(chord.Chord(c.split('x')[0], quarter_length=c.split('x')[1]))
         chords_for_model.append((c.split('x')[0], c.split('x')[1]))
+        if '-' in c and 'm' in c:
+            c = c.replace('m', '')
+        chord_stream.append(chord.Chord(harmony.ChordSymbol(c.split('x')[0]).pitches, quarterLength=int(c.split('x')[1])))
         
     return chord_stream, chords_for_model
 
 
 # Convert to MusicXML using music21
-def generate_score(melody, chord_stream, output_file="generated_f_blues_with_chords.musicxml"):
+def generate_score(melody, chord_stream):
     score = stream.Score()
+    score.insert(0, metadata.Metadata())
+    score.metadata.title = 'CharlAI'
+    score.metadata.composer = 'Daniel Little and Emily Ertle'
     melody_stream = stream.Part()
+    time_signature = meter.TimeSignature('4/4')
+    score.append(time_signature)
 
-    melody_stream.append(metadata.Metadata())
-    melody_stream.metadata.title = "Generated 12 Bar F Blues Melody with Chords"
-    melody_stream.metadata.composer = "Charlie Parker AI"
 
-    measure_length = 4
-    measure_count = 0
-    current_melody_measure = stream.Measure(number=measure_count + 1)
-    current_chord_measure = stream.Measure(number=measure_count + 1)
+    chord_length = 0
+    for c in chord_stream.notes:
+        chord_length += c.duration.quarterLength
 
-    time_in_measure = 0
-    chord_idx = 0
+    flag = False
+    current_chord_idx = 0
+    melody_length = 0
+    measure_pos = 0
 
-    for midi_pitch, duration in melody:
-        if time_in_measure + duration > measure_length:
-            melody_stream.append(current_melody_measure)
-            chord_stream.append(current_chord_measure)
-            measure_count += 1
-            current_melody_measure = stream.Measure(number=measure_count + 1)
-            current_chord_measure = stream.Measure(number=measure_count + 1)
-            time_in_measure = 0
-
-        n = note.Note(midi_pitch)
-        n.quarterLength = duration
-        current_melody_measure.append(n)
-
-        time_in_measure += duration
-
-    melody_stream.append(current_melody_measure)
+    while not flag:
+        for midi_pitch, duration in melody:
+            # Continue while the melody is not longer than the chords
+            if melody_length >= chord_length:
+                flag = True
+                break
+            melody_stream.append(note.Note(midi_pitch, quarterLength=duration))
+            
+            measure_pos += duration
+            melody_length += duration
+            if melody_length >= chord_length:
+                flag = True
+                break
+            if measure_pos > 4:
+                current_chord_idx += 1
+                measure_pos -= 4
 
     score.append(chord_stream)
     score.append(melody_stream)
@@ -178,7 +185,7 @@ def main():
     chord_stream, chords_for_model = generate_chords(num_bars)
 
     # Generate melody
-    generated_melody = generate_melody(model, chords_for_model, length=96)
+    generated_melody = generate_melody(model=model, chord_sequence=chords_for_model, length=96)
 
     # Save melody and chords to MusicXML
     score = generate_score(generated_melody, chord_stream)
