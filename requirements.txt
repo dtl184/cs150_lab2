@@ -2,6 +2,7 @@ certifi==2024.12.14
 chardet==5.2.0
 charset-normalizer==3.4.1
 contourpy==1.3.0
+cupy==13.4.0
 cycler==0.12.1
 filelock==3.17.0
 fonttools==4.55.4
