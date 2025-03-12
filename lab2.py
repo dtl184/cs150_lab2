@@ -78,34 +78,46 @@ def generate_melody(chord_sequence, model, length=48):
 
 
 def generate_chords(num_bars=24):
+    chord_stream = stream.Part()
     # Open and read the JSON files
     with open('markovify.json', 'r') as f:
         model_json = json.load(f)
     
     markov_model = markovify.Text.from_json(model_json)
     
+    def chord_length_filter(sentence, num_bars=24):
+        desired_chord_length = num_bars * 4
+        curr_chord_length = 0
+        chords = sentence.split()
+        for c in chords:
+            c = c.rstrip('.')
+            curr_chord_length += int(c.split('x')[1])
+            
+        
+        if curr_chord_length == desired_chord_length:
+            print(desired_chord_length, curr_chord_length)
+            return sentence
+        else:
+            return None
+    
     sentence = None
     while sentence == False or sentence is None:  # Keep generating until we get a valid one
         sentence = markov_model.make_sentence(tries=100, min_chars=num_bars*4, max_chars=num_bars*11)
         sentence = chord_length_filter(sentence, num_bars)
-
     
-    desired_chord_length = num_bars * 4
-    curr_chord_length = 0
+    chords_for_model = []
     chords = sentence.split()
     for c in chords:
         c = c.rstrip('.')
-        curr_chord_length += int(c.split('x')[1])
-    
-    if curr_chord_length == desired_chord_length:
-        print(desired_chord_length, curr_chord_length)
-        return sentence
-    else:
-        return None
+        chord_stream.append(chord.Chord(c.split('x')[0], quarter_length=c.split('x')[1]))
+        chords_for_model.append((c.split('x')[0], c.split('x')[1]))
+        
+    return chord_stream, chords_for_model
+
 
 # Convert to MusicXML using music21
 def generate_score(melody, chord_sequence, output_file="generated_f_blues_with_chords.musicxml"):
-    score = 
+    score = stream.Score()
     melody_stream = stream.Part()
     chord_stream = stream.Part()
 
@@ -162,17 +174,6 @@ def chord_length_filter(sentence, num_bars=12):
         return None
 
 def main():
-    # Set up the score
-    score = stream.Score()
-    chords = stream.Part()
-    melody = stream.Part()
-
-    # Add time signature and key information to the score
-    time_signature = meter.TimeSignature('4/4')
-    score.append(time_signature)
-    #k = key.Key('C')
-    #score.append(k)
-    
     # Load model
     vocab_size = len(chord_classes)
     note_output_size = len(note_classes)
@@ -187,19 +188,13 @@ def main():
     
     num_bars=24
         
-    generated_chords = generate_chords(num_bars)
+    chord_stream, chords_for_model = generate_chords(num_bars)
 
     # Generate melody
-    generated_melody = generate_melody(melody, generated_chords, length=96)
+    generated_melody = generate_melody(model, chords_for_model, length=96)
 
     # Save melody and chords to MusicXML
-    generate_score(generated_melody, generated_chords)
-    
-    score.insert(0, melody)
-    score.insert(0, chords)
-    score.insert(0, metadata.Metadata())
-    score.metadata.title = 'New Blues'
-    score.metadata.composer = 'Emily Ertle and Dan Little'
+    score = generate_score(generated_melody, chord_stream)
     
 
     # Play midi, output sheet music, or print the contents of the stream
