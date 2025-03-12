@@ -30,21 +30,6 @@ class JazzMelodyLSTM(torch.nn.Module):
         note_out = self.softmax(self.fc_note(x))
         duration_out = self.softmax(self.fc_duration(x))
         return note_out, duration_out
-    
-
-def create_chord_stream(chord_sequence):
-    chord_stream = stream.Part()
-    measure_count = 1
-
-    for chord_symbol in chord_sequence:
-        current_measure = stream.Measure(number=measure_count)
-        block_chord = chord.Chord(chords[chord_symbol])
-        block_chord.quarterLength = 4.0  # Whole note duration
-        current_measure.append(block_chord)
-        chord_stream.append(current_measure)
-        measure_count += 1
-
-    return chord_stream
 
 
 # Function to generate a melody
@@ -117,10 +102,9 @@ def generate_chords(num_bars=24):
 
 
 # Convert to MusicXML using music21
-def generate_score(melody, chord_sequence, output_file="generated_f_blues_with_chords.musicxml"):
+def generate_score(melody, chord_stream, output_file="generated_f_blues_with_chords.musicxml"):
     score = stream.Score()
     melody_stream = stream.Part()
-    chord_stream = stream.Part()
 
     melody_stream.append(metadata.Metadata())
     melody_stream.metadata.title = "Generated 12 Bar F Blues Melody with Chords"
@@ -150,13 +134,11 @@ def generate_score(melody, chord_sequence, output_file="generated_f_blues_with_c
         time_in_measure += duration
 
     melody_stream.append(current_melody_measure)
-    chord_stream = create_chord_stream()
 
     score.append(chord_stream)
     score.append(melody_stream)
 
-    score.write("musicxml", fp=output_file)
-    score.show()
+    return score
     
     
 # Function to enforce Markovify word count
